@@ -1,6 +1,10 @@
 class SupabaseConstants {
   SupabaseConstants._();
 
-  static const String url = 'https://bxqgwwwzmbyvwcqpzmsy.supabase.co';
-  static const String anonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4cWd3d3d6bWJ5dndjcXB6bXN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2MjI4MjYsImV4cCI6MjA5NTE5ODgyNn0.VYeypb6EU3Oom-NA7omO2ztO104M1IHnS4cC8S6UIK0';
+  static const String url = 'https://tniemfscnbcbzbypliem.supabase.co';
+
+  /// Publishable ("anon") key. Safe to ship inside the app — it is protected
+  /// by the row level security policies in supabase/schema.sql, not by secrecy.
+  /// Never put the secret / service_role key here.
+  static const String anonKey = 'sb_publishable_HVz5jE8dB5rYm4AvD3PHMg_o8SmYLgO';
 }
