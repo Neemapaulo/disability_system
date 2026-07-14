@@ -1,9 +1,62 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' show ClientException;
+import 'package:supabase_flutter/supabase_flutter.dart'
+    show AuthException, PostgrestException, StorageException;
 import '../../../core/models/ripoti_model.dart';
 import '../../../core/services/ripoti_service.dart';
 import '../../../core/services/location_service.dart';
 import '../../auth/providers/auth_provider.dart';
+
+/// Turns a raw exception into something a citizen can act on.
+///
+/// Without this the UI showed things like
+/// "PostgrestException(message: new row violates row-level security policy…)",
+/// which tells the user nothing about what to do next. Losing signal
+/// mid-report is the common case, so it gets its own clear message.
+String friendlyRipotiError(Object e) {
+  // No connection at all: airplane mode, no data bundle, dead zone.
+  if (e is SocketException) {
+    return 'Hakuna mtandao. Ripoti yako HAIJATUMWA. '
+        'Washa intaneti kisha ubonyeze "Jaribu tena".';
+  }
+
+  // Connected, but too slow or the request died halfway.
+  if (e is TimeoutException || e is ClientException) {
+    return 'Mtandao ni hafifu, ripoti haikutumwa kikamilifu. '
+        'Sogea eneo lenye mtandao mzuri kisha ujaribu tena.';
+  }
+
+  // The photo upload failed. Usually still a network problem.
+  if (e is StorageException) {
+    return 'Imeshindwa kupakia picha. Hakikisha una mtandao kisha ujaribu tena.';
+  }
+
+  // Session expired or the user was signed out.
+  if (e is AuthException) {
+    return 'Muda wako wa kuingia umeisha. Tafadhali ingia tena.';
+  }
+
+  if (e is PostgrestException) {
+    return 'Hitilafu ya mfumo. Ripoti haijatumwa. Jaribu tena baadaye.';
+  }
+
+  // Some network failures arrive wrapped in another exception type, so fall
+  // back to sniffing the message before giving up.
+  final text = e.toString().toLowerCase();
+  if (text.contains('socketexception') ||
+      text.contains('failed host lookup') ||
+      text.contains('connection') ||
+      text.contains('timed out') ||
+      text.contains('timeout') ||
+      text.contains('network')) {
+    return 'Hakuna mtandao. Ripoti yako HAIJATUMWA. '
+        'Washa intaneti kisha ubonyeze "Jaribu tena".';
+  }
+
+  return 'Imeshindwa kutuma ripoti. Jaribu tena.';
+}
 
 
 // ── Service providers ──────────────────────────
@@ -153,7 +206,7 @@ class CaptureNotifier extends StateNotifier<CaptureState> {
     } catch (e) {
       state = state.copyWith(
         isSubmitting: false,
-        errorMessage: 'Imeshindwa kutuma: $e',
+        errorMessage: friendlyRipotiError(e),
       );
       return false;
     }

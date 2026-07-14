@@ -67,13 +67,24 @@ class _ReportFormScreenState extends ConsumerState<ReportFormScreen> {
       context.pushReplacement(Routes.reportSuccess);
     } else {
       final error = ref.read(captureProvider).errorMessage;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content:         Text(error ?? 'Imeshindwa kutuma.'),
-          backgroundColor: AppColors.error,
-          behavior:        SnackBarBehavior.floating,
-        ),
-      );
+
+      // The photo, location and description are still held in CaptureState,
+      // so retrying re-sends the same report — nothing is lost.
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content:         Text(error ?? 'Imeshindwa kutuma ripoti. Jaribu tena.'),
+            backgroundColor: AppColors.error,
+            behavior:        SnackBarBehavior.floating,
+            duration:        const Duration(seconds: 8),
+            action: SnackBarAction(
+              label:         'Jaribu tena',
+              textColor:     Colors.white,
+              onPressed:     _submit,
+            ),
+          ),
+        );
     }
   }
 
