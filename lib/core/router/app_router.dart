@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../features/auth/providers/auth_provider.dart';
 import '../../features/auth/screens/onboarding_screen.dart';
 import '../../features/auth/screens/splash_screen.dart';
 import '../../features/auth/screens/login_screen.dart';
@@ -30,9 +32,55 @@ abstract class Routes {
   static const gapMap           = '/gap-map';
 }
 
+/// Routes reachable without a session. Everything else requires one.
+const _publicRoutes = <String>{
+  Routes.onboarding,
+  Routes.login,
+  Routes.register,
+  Routes.accountRetrieval,
+};
+
+/// Bridges Riverpod's auth state to GoRouter, so `redirect` re-runs whenever
+/// the user signs in or out.
+class _AuthRefreshNotifier extends ChangeNotifier {
+  late final ProviderSubscription<AuthState> _sub;
+
+  _AuthRefreshNotifier(Ref ref) {
+    _sub = ref.listen<AuthState>(authProvider, (_, __) => notifyListeners());
+  }
+
+  @override
+  void dispose() {
+    _sub.close();
+    super.dispose();
+  }
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
+  final refresh = _AuthRefreshNotifier(ref);
+  ref.onDispose(refresh.dispose);
+
   return GoRouter(
     initialLocation: Routes.splash,
+    refreshListenable: refresh,
+    redirect: (_, state) {
+      final auth = ref.read(authProvider);
+      final loc  = state.matchedLocation;
+
+      // The splash screen runs its own animation and routes itself once the
+      // session check finishes, so leave it alone.
+      if (loc == Routes.splash) return null;
+
+      // Session not resolved yet — park on splash rather than guessing.
+      if (auth.status == AuthStatus.loading) return Routes.splash;
+
+      final isPublic = _publicRoutes.contains(loc);
+
+      if (!auth.isAuthenticated && !isPublic) return Routes.login;
+      if (auth.isAuthenticated && isPublic)   return Routes.dashboard;
+
+      return null;
+    },
     routes: [
       GoRoute(
         path: Routes.splash,

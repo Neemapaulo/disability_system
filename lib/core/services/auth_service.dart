@@ -95,31 +95,31 @@ class AuthService {
   // ─────────────────────────────────────────
   // ACCOUNT RETRIEVAL
   // ─────────────────────────────────────────
+  /// The secret answer is verified inside the `retrieve_account` Postgres
+  /// function, so the client never reads it. On success the function returns
+  /// a masked email; on any failure it returns null and we show the same
+  /// message, so this cannot be used to probe which accounts exist.
   Future<String?> retrieveAccount({
     required String fullName,
     required String phoneNumber,
     required String secretAnswer,
   }) async {
     try {
-      // Find the user by these details
-      final data = await _supabase
-          .from('profiles')
-          .select('email, secret_answer')
-          .eq('full_name', fullName)
-          .eq('phone_number', phoneNumber)
-          .maybeSingle();
+      final masked = await _supabase.rpc('retrieve_account', params: {
+        'p_full_name': fullName.trim(),
+        'p_phone':     phoneNumber.trim(),
+        'p_answer':    secretAnswer.trim(),
+      }) as String?;
 
-      if (data == null) return 'Akaunti haikupatikana.';
-
-      if (data['secret_answer'] != secretAnswer) {
-        return 'Jibu la swali la siri si sahihi.';
+      if (masked == null || masked.isEmpty) {
+        return 'Taarifa ulizojaza hazilingani na akaunti yoyote. '
+            'Hakiki majina, namba ya simu na jibu la swali la siri.';
       }
 
-      // Success - Return email so user knows which account it is
-      // In a real app, you might trigger a password reset here
-      return 'Tayari! Barua pepe yako ni ${data['email']}. Unaweza kubadilisha nenosiri sasa.';
+      return 'Tayari! Akaunti yako inatumia barua pepe $masked. '
+          'Tumia barua pepe hiyo kuingia au kubadilisha nenosiri.';
     } catch (e) {
-      return 'Hitilafu: $e';
+      return 'Hitilafu ya mtandao. Jaribu tena.';
     }
   }
 

@@ -46,9 +46,9 @@ class RipotiService {
       'mkoa':      mkoa,
       'wilaya':    wilaya,
       'kata':      kata,
-      'eneo':      eneo,
+      'eneo_jina': eneo,
       'picha_url': pichaUrl,
-      'hali':      'reported',
+      'hali':      'mpya',
     }).select().single();
 
     return RipotiModel.fromJson(data);
