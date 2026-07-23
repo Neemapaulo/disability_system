@@ -597,27 +597,30 @@ const Dashboard: React.FC = () => {
                                               Tazama →
                                             </button>
                                           </div>
-                                          {((r.frequency_count && r.frequency_count > 1) || (r.priority_score && r.priority_score > 0)) && (
+                                          {/* Ternaries, not `&&`: a numeric guard that lands on 0 is
+                                              falsy but still a value, and React prints it. A bare "0"
+                                              next to the description is what that looked like. */}
+                                          {(r.frequency_count ?? 0) > 1 || (r.priority_score ?? 0) > 0 ? (
                                             <div className="flex flex-col gap-2 text-right">
-                                              {r.frequency_count && r.frequency_count > 1 && (
+                                              {(r.frequency_count ?? 0) > 1 ? (
                                                 <div title="Idadi ya mara zilizoripoti" className="px-2 py-1 bg-amber-50 border border-amber-200 rounded text-xs font-bold text-amber-700 whitespace-nowrap">
                                                   Ripoti ×{r.frequency_count}
                                                 </div>
-                                              )}
-                                              {r.priority_score && r.priority_score > 0 && (
+                                              ) : null}
+                                              {(r.priority_score ?? 0) > 0 ? (
                                                 <div
                                                   title="Alama ya kipaumbele"
                                                   className={`px-2 py-1 rounded text-xs font-bold whitespace-nowrap ${
-                                                    r.priority_score > 5 ? 'bg-red-50 border border-red-200 text-red-700' :
-                                                    r.priority_score > 2 ? 'bg-orange-50 border border-orange-200 text-orange-700' :
+                                                    (r.priority_score ?? 0) > 5 ? 'bg-red-50 border border-red-200 text-red-700' :
+                                                    (r.priority_score ?? 0) > 2 ? 'bg-orange-50 border border-orange-200 text-orange-700' :
                                                     'bg-yellow-50 border border-yellow-200 text-yellow-700'
                                                   }`}
                                                 >
-                                                  Haraka ⚡{r.priority_score.toFixed(1)}
+                                                  Haraka ⚡{(r.priority_score ?? 0).toFixed(1)}
                                                 </div>
-                                              )}
+                                              ) : null}
                                             </div>
-                                          )}
+                                          ) : null}
                                         </div>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
@@ -1043,41 +1046,40 @@ const ReportDetail = ({
                 <span className="text-slate-800">{report.eneo_jina}</span>
               </div>
             )}
-            {(report.latitude || report.longitude) && (
+            {report.latitude != null && report.longitude != null ? (
               <div className="flex justify-between">
                 <span className="text-slate-500 font-bold">Nafasi:</span>
-                <span className="text-slate-800 text-xs">{report.latitude?.toFixed(4)}, {report.longitude?.toFixed(4)}</span>
+                <span className="text-slate-800 text-xs">{report.latitude.toFixed(4)}, {report.longitude.toFixed(4)}</span>
               </div>
-            )}
+            ) : null}
           </div>
 
-          {/* Priority Index - only show if any values are meaningful */}
-          {(
-            (report.frequency_count && report.frequency_count > 1) ||
-            (report.severity_weight && report.severity_weight > 0.5) ||
-            (report.priority_score && report.priority_score > 0)
-          ) && (
+          {/* Priority Index — only when a value says something. Ternaries so a
+              numeric guard of 0 cannot leak onto the page as text. */}
+          {(report.frequency_count ?? 0) > 1 ||
+           (report.severity_weight ?? 0) > 0.5 ||
+           (report.priority_score ?? 0) > 0 ? (
             <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
               <p className="text-xs font-black text-blue-700 uppercase tracking-widest mb-2">Kipaumbele</p>
               <div className="space-y-1">
-                {report.frequency_count && report.frequency_count > 1 && (
+                {(report.frequency_count ?? 0) > 1 ? (
                   <p className="text-xs text-slate-700">
                     <span className="font-bold">Ripoti:</span> ×{report.frequency_count}
                   </p>
-                )}
-                {report.severity_weight && report.severity_weight > 0.5 && (
+                ) : null}
+                {(report.severity_weight ?? 0) > 0.5 ? (
                   <p className="text-xs text-slate-700">
-                    <span className="font-bold">Ukali:</span> {report.severity_weight.toFixed(2)}
+                    <span className="font-bold">Ukali:</span> {(report.severity_weight ?? 0).toFixed(2)}
                   </p>
-                )}
-                {report.priority_score && report.priority_score > 0 && (
+                ) : null}
+                {(report.priority_score ?? 0) > 0 ? (
                   <p className="text-xs text-slate-700">
-                    <span className="font-bold">Alama:</span> {report.priority_score.toFixed(2)}
+                    <span className="font-bold">Alama:</span> {(report.priority_score ?? 0).toFixed(2)}
                   </p>
-                )}
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
 
           {/* Status & Admin Comments */}
           <div className="border-t border-slate-100 pt-4">
