@@ -597,23 +597,23 @@ const Dashboard: React.FC = () => {
                                               Tazama →
                                             </button>
                                           </div>
-                                          {(r.frequency_count || r.priority_score) && (
+                                          {(r.frequency_count || (r.priority_score && r.priority_score > 0)) && (
                                             <div className="flex flex-col gap-2 text-right">
-                                              {r.frequency_count && (
-                                                <div title="Idadi ya mara zilizoripoti" className="px-2 py-1 bg-amber-50 border border-amber-200 rounded text-xs font-bold text-amber-700">
-                                                  ×{r.frequency_count}
+                                              {r.frequency_count && r.frequency_count > 1 && (
+                                                <div title="Idadi ya mara zilizoripoti" className="px-2 py-1 bg-amber-50 border border-amber-200 rounded text-xs font-bold text-amber-700 whitespace-nowrap">
+                                                  Ripoti ×{r.frequency_count}
                                                 </div>
                                               )}
                                               {r.priority_score && r.priority_score > 0 && (
                                                 <div
                                                   title="Alama ya kipaumbele"
-                                                  className={`px-2 py-1 rounded text-xs font-bold ${
+                                                  className={`px-2 py-1 rounded text-xs font-bold whitespace-nowrap ${
                                                     r.priority_score > 5 ? 'bg-red-50 border border-red-200 text-red-700' :
                                                     r.priority_score > 2 ? 'bg-orange-50 border border-orange-200 text-orange-700' :
                                                     'bg-yellow-50 border border-yellow-200 text-yellow-700'
                                                   }`}
                                                 >
-                                                  ⚡{r.priority_score.toFixed(1)}
+                                                  Haraka ⚡{r.priority_score.toFixed(1)}
                                                 </div>
                                               )}
                                             </div>
@@ -976,102 +976,104 @@ const ReportDetail = ({
   }, [report.id]);
 
   const photos = report.picha_url ? [report.picha_url] : [];
-  const hasPriority = report.frequency_count || report.severity_weight || report.priority_score;
 
   return (
-    <div
-      className="fixed inset-0 z-[2000] bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
-      onClick={onClose}
-    >
+    <>
+      {/* Backdrop */}
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-3xl w-full max-w-2xl my-8 shadow-2xl"
+        className="fixed inset-0 z-[1999] bg-slate-900/40 backdrop-blur-sm transition-opacity"
+        onClick={onClose}
+      />
+
+      {/* Right-side panel */}
+      <div
+        className="fixed right-0 top-0 bottom-0 z-[2000] w-full max-w-xl bg-white shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300"
       >
         {/* Header */}
-        <div className="flex justify-between items-start p-8 border-b border-slate-100">
-          <div>
-            <h2 className="text-2xl font-black text-slate-900">{report.aina}</h2>
-            <p className="text-sm text-slate-500 mt-1">
+        <div className="sticky top-0 bg-white border-b border-slate-100 p-6 flex justify-between items-start">
+          <div className="flex-1">
+            <h2 className="text-xl font-black text-slate-900">{report.aina}</h2>
+            <p className="text-xs text-slate-500 mt-1">
               {report.eneo_jina && <span>{report.eneo_jina}</span>}
               {report.eneo_jina && report.kata && <span> • </span>}
-              {report.kata && <span>{report.kata}, {report.wilaya}</span>}
+              {report.kata && <span>{report.kata}</span>}
             </p>
           </div>
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ml-4 p-2 text-slate-400 hover:bg-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 shrink-0"
+            aria-label="Funga"
           >
-            <X size={24} />
+            <X size={20} />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-8 space-y-6">
+        <div className="p-6 space-y-4">
           {/* Photo */}
           {photos.length > 0 && (
-            <div className="rounded-2xl overflow-hidden bg-slate-100">
-              <img src={photos[0]} alt="" className="w-full h-96 object-cover" />
+            <div className="rounded-lg overflow-hidden bg-slate-100">
+              <img src={photos[0]} alt="" className="w-full h-48 object-cover" />
             </div>
           )}
 
           {/* Full Description */}
           <div>
-            <h3 className="text-sm font-black text-slate-600 uppercase tracking-widest mb-2">Maelezo</h3>
-            <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{report.maelezo}</p>
+            <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Maelezo</h3>
+            <p className="text-sm text-slate-700 leading-relaxed">{report.maelezo}</p>
           </div>
 
-          {/* Location Details */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Mkoa</p>
-              <p className="text-sm font-bold text-slate-800">{report.mkoa}</p>
+          {/* Location Details - compact */}
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-slate-500 font-bold">Mkoa:</span>
+              <span className="text-slate-800">{report.mkoa}</span>
             </div>
-            <div>
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Wilaya</p>
-              <p className="text-sm font-bold text-slate-800">{report.wilaya}</p>
+            <div className="flex justify-between">
+              <span className="text-slate-500 font-bold">Wilaya:</span>
+              <span className="text-slate-800">{report.wilaya}</span>
             </div>
-            <div>
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Kata</p>
-              <p className="text-sm font-bold text-slate-800">{report.kata}</p>
+            <div className="flex justify-between">
+              <span className="text-slate-500 font-bold">Kata:</span>
+              <span className="text-slate-800">{report.kata}</span>
             </div>
-            <div>
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Mahali</p>
-              <p className="text-sm font-bold text-slate-800">{report.eneo_jina || '—'}</p>
-            </div>
+            {report.eneo_jina && (
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-bold">Mahali:</span>
+                <span className="text-slate-800">{report.eneo_jina}</span>
+              </div>
+            )}
+            {(report.latitude || report.longitude) && (
+              <div className="flex justify-between">
+                <span className="text-slate-500 font-bold">Nafasi:</span>
+                <span className="text-slate-800 text-xs">{report.latitude?.toFixed(4)}, {report.longitude?.toFixed(4)}</span>
+              </div>
+            )}
           </div>
 
-          {/* Coordinates */}
-          {(report.latitude || report.longitude) && (
-            <div>
-              <p className="text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Nafasi</p>
-              <p className="text-sm text-slate-700">
-                {report.latitude?.toFixed(4)}, {report.longitude?.toFixed(4)}
-              </p>
-            </div>
-          )}
-
-          {/* Priority Index */}
-          {hasPriority && (
-            <div className="bg-slate-50 rounded-xl p-4">
-              <p className="text-xs font-black text-slate-600 uppercase tracking-widest mb-3">Kipaumbele cha Ripoti</p>
-              <div className="space-y-2">
-                {report.frequency_count !== undefined && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-600">Idadi ya Mara</span>
-                    <span className="font-bold text-slate-800">{report.frequency_count}</span>
-                  </div>
+          {/* Priority Index - only show if any values are meaningful */}
+          {(
+            (report.frequency_count && report.frequency_count > 1) ||
+            (report.severity_weight && report.severity_weight > 0.5) ||
+            (report.priority_score && report.priority_score > 0)
+          ) && (
+            <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
+              <p className="text-xs font-black text-blue-700 uppercase tracking-widest mb-2">Kipaumbele</p>
+              <div className="space-y-1">
+                {report.frequency_count && report.frequency_count > 1 && (
+                  <p className="text-xs text-slate-700">
+                    <span className="font-bold">Ripoti:</span> ×{report.frequency_count}
+                  </p>
                 )}
-                {report.severity_weight !== undefined && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-600">Uzito wa Ukali</span>
-                    <span className="font-bold text-slate-800">{report.severity_weight.toFixed(2)}</span>
-                  </div>
+                {report.severity_weight && report.severity_weight > 0.5 && (
+                  <p className="text-xs text-slate-700">
+                    <span className="font-bold">Ukali:</span> {report.severity_weight.toFixed(2)}
+                  </p>
                 )}
-                {report.priority_score !== undefined && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-600">Alama ya Kipaumbele</span>
-                    <span className="font-bold text-slate-800">{report.priority_score.toFixed(2)}</span>
-                  </div>
+                {report.priority_score && report.priority_score > 0 && (
+                  <p className="text-xs text-slate-700">
+                    <span className="font-bold">Alama:</span> {report.priority_score.toFixed(2)}
+                  </p>
                 )}
               </div>
             </div>
@@ -1142,25 +1144,25 @@ const ReportDetail = ({
           )}
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex gap-3 p-8 border-t border-slate-100">
+        {/* Action Buttons - sticky at bottom */}
+        <div className="sticky bottom-0 flex gap-2 p-6 border-t border-slate-100 bg-white">
           <button
             type="button"
             onClick={onEditStatus}
-            className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all flex items-center justify-center gap-2"
+            className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all flex items-center justify-center gap-2"
           >
-            <Pencil size={16} aria-hidden="true" /> Badilisha Hali
+            <Pencil size={14} aria-hidden="true" /> Badilisha
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="px-6 py-3 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+            className="px-4 py-2.5 text-slate-600 rounded-lg font-bold text-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
           >
             Funga
           </button>
         </div>
       </div>
-    </div>
+    </>
   );
 };
 
