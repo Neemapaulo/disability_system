@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../utils/supabase';
 import {
-  Users, MapPin, CheckCircle, Clock,
-  BarChart3, Filter, LogOut, Search,
-  ChevronRight, AlertTriangle, Info, Map as MapIcon, Image as ImageIcon,
-  Maximize2, X, LayoutGrid
+  Users, CheckCircle, Clock,
+  LogOut, Search,
+  ChevronRight, Map as MapIcon, Image as ImageIcon,
+  X, LayoutGrid
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as d3 from 'd3';
@@ -296,7 +296,7 @@ const Dashboard: React.FC = () => {
         .selectAll("g")
         .data(statusKeys)
         .enter().append("g")
-        .attr("transform", (d, i) => `translate(${i * 60}, 0)`);
+        .attr("transform", (_d, i) => `translate(${i * 60}, 0)`);
 
     legend.append("rect").attr("width", 8).attr("height", 8).attr("fill", d => statusColors[d]);
     legend.append("text").attr("x", 12).attr("y", 8).text(d => statusLabels[d]).style("font-size", "9px").style("font-weight", "900").style("fill", "#94a3b8").style("text-transform", "uppercase");

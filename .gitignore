@@ -2,7 +2,11 @@
 .dart_tool/
 .packages
 .pub/
-build/
+# Anchored: an unanchored "build/" also matches node_modules/*/build,
+# which silently strips files that packages need at runtime.
+/build/
+android/**/build/
+ios/**/build/
 
 # Android
 android/.gradle/
@@ -11,6 +15,10 @@ android/local.properties
 # iOS
 ios/Pods/
 ios/.symlinks/
+
+# Node
+node_modules/
+dist/
 
 # VS Code
 .vscode/
