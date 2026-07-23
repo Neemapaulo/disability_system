@@ -597,7 +597,7 @@ const Dashboard: React.FC = () => {
                                               Tazama →
                                             </button>
                                           </div>
-                                          {(r.frequency_count || (r.priority_score && r.priority_score > 0)) && (
+                                          {((r.frequency_count && r.frequency_count > 1) || (r.priority_score && r.priority_score > 0)) && (
                                             <div className="flex flex-col gap-2 text-right">
                                               {r.frequency_count && r.frequency_count > 1 && (
                                                 <div title="Idadi ya mara zilizoripoti" className="px-2 py-1 bg-amber-50 border border-amber-200 rounded text-xs font-bold text-amber-700 whitespace-nowrap">
