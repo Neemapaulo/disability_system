@@ -4,11 +4,12 @@ import {
   Users, CheckCircle, Clock,
   LogOut, Search,
   Map as MapIcon, Image as ImageIcon,
-  X, LayoutGrid, AlertTriangle, Pencil, ArrowUpDown
+  X, LayoutGrid, AlertTriangle, Pencil, ArrowUpDown, Send
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as d3 from 'd3';
 import { HALI, HALI_ORDER, Hali, haliLabel, haliShort, haliDot } from '../constants/hali';
+import { ainaLabel, ainaShort } from '../constants/aina';
 import { tarehe, tareheNaSaa, mudaUliopita, sikuTangu } from '../utils/tarehe';
 
 /** Rows per page in the reports table. */
@@ -18,6 +19,41 @@ const PAGE_SIZE = 15;
 declare const L: any;
 
 const MAPTILER_KEY = 'WJJkkUF7ZR4ONv2iXSdu';
+
+/**
+ * The Dar es Salaam region, padded slightly: Kwembe and Kibamba on the western
+ * edge out to the coast, Bunju in the north down to Kimbiji and Pembamnazi in
+ * southern Kigamboni.
+ *
+ * The council has no jurisdiction beyond this, so the map is clamped to it
+ * rather than letting anyone pan off into open ocean or the rest of the country.
+ * Leaflet order is [[south, west], [north, east]].
+ */
+const DAR_BOUNDS: [[number, number], [number, number]] = [[-7.20, 38.95], [-6.40, 39.65]];
+
+/**
+ * How far the map may be dragged — deliberately looser than DAR_BOUNDS.
+ *
+ * These are two different questions. DAR_BOUNDS asks "is this coordinate real";
+ * this asks "may I look over there". Pinning the pan limit to the region exactly
+ * makes the map feel jammed: on a wide screen the viewport is wider than the
+ * region itself, so with a hard clamp Leaflet has no slack to move at all and
+ * dragging does nothing. The padding gives it room while still keeping the rest
+ * of the country off screen.
+ */
+const MAP_MAX_BOUNDS: [[number, number], [number, number]] = [[-7.45, 38.65], [-6.15, 39.95]];
+
+/**
+ * A coordinate outside the region is bad data rather than a report from
+ * somewhere else — the mobile app only collects within Dar. Such points are
+ * kept off the map's auto-fit, because one glitched GPS fix stretching the
+ * viewport to another country is what made the map open on the whole world.
+ */
+const ndaniYaDar = (lat?: number, lng?: number): boolean => {
+  if (lat == null || lng == null) return false;
+  const [[south, west], [north, east]] = DAR_BOUNDS;
+  return lat >= south && lat <= north && lng >= west && lng <= east;
+};
 
 interface Report {
   id: string;
@@ -68,8 +104,43 @@ const DISTRICT_WARDS: Record<string, string[]> = {
   ]
 };
 
+/**
+ * The four views, and what each one is actually for.
+ *
+ * These used to be Overview / Recent / Solved / Map, which did not partition
+ * anything: Overview applied no filter at all, so every unresolved report
+ * appeared both there and under Recent, and "Recent" was never about time — it
+ * meant "not yet resolved". Each view now answers one question:
+ *
+ *   muhtasari      — how are we doing?         summary only, no table
+ *   zinazosubiri   — what is ours to do?       the working queue
+ *   kwa_mamlaka    — what are we waiting on?   sitting with an outside body
+ *   zilizotatuliwa — what has been closed?     the record
+ *   ramani         — where are the problems?
+ *
+ * Kwa Mamlaka is split out because the council is not the actor on those: the
+ * problem sits with TANROADS, TARURA or whoever owns that infrastructure, and
+ * the work is chasing rather than fixing. Folded into the main queue they
+ * inflated the backlog and, worse, could sit forever looking like progress.
+ */
+const TABS = {
+  muhtasari:      { label: 'Muhtasari',      title: 'Muhtasari',      subtitle: 'Hali ya ripoti kwa ujumla' },
+  zinazosubiri:   { label: 'Zinazosubiri',   title: 'Zinazosubiri',   subtitle: 'Ripoti zinazohitaji hatua ya baraza' },
+  kwa_mamlaka:    { label: 'Kwa Mamlaka',    title: 'Kwa Mamlaka',    subtitle: 'Zilizopelekwa mamlaka husika' },
+  zilizotatuliwa: { label: 'Zilizotatuliwa', title: 'Zilizotatuliwa', subtitle: 'Ripoti zilizofungwa' },
+  ramani:         { label: 'Ramani',         title: 'Ramani',         subtitle: 'Ripoti zote kwenye ramani' },
+} as const;
+
+type Tab = keyof typeof TABS;
+
+/** The status a report carries once it has been passed to an outside body. */
+const HALI_MAMLAKA: Hali = 'imepewa_mamlaka';
+
+/** How many of the longest-waiting reports the summary calls out by name. */
+const ATTENTION_LIMIT = 5;
+
 const Dashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'recent' | 'solved' | 'map'>('overview');
+  const [activeTab, setActiveTab] = useState<Tab>('muhtasari');
   const [reports, setReports] = useState<Report[]>([]);
   const [filteredReports, setFilteredReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,6 +150,8 @@ const Dashboard: React.FC = () => {
   const [katas, setKatas] = useState<string[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  /** Reports carrying coordinates that fall outside Dar — bad GPS, not bad luck. */
+  const [njeYaDar, setNjeYaDar] = useState(0);
 
   /** Page-level problem the admin needs to see (load failure, blocked write). */
   const [banner, setBanner] = useState<string | null>(null);
@@ -111,14 +184,16 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     if (loading) return;
     const timer = setTimeout(() => {
-      if (activeTab === 'overview' || activeTab === 'map') {
+      if (activeTab === 'muhtasari' || activeTab === 'ramani') {
         initMap();
         updateMapMarkers();
-        if (activeTab === 'overview') renderD3Chart();
+        if (activeTab === 'muhtasari') renderD3Chart();
       }
     }, 200);
     return () => clearTimeout(timer);
-  }, [activeTab, filteredReports, loading, sidebarOpen]);
+    // `reports` as well as `filteredReports`: the chart is drawn from the
+    // unfiltered set, so it must redraw when that set changes.
+  }, [activeTab, reports, filteredReports, loading, sidebarOpen]);
 
   const initMap = () => {
     if (!mapContainerRef.current) return;
@@ -127,10 +202,21 @@ const Dashboard: React.FC = () => {
       return;
     }
     try {
-      mapRef.current = L.map(mapContainerRef.current, { zoomControl: false, maxZoom: 19 }).setView([-6.8235, 39.2695], 13);
+      mapRef.current = L.map(mapContainerRef.current, {
+        zoomControl: false,
+        maxZoom: 19,
+        // Below 11 the region stops filling the frame and you are looking at
+        // land this dashboard has nothing to say about.
+        minZoom: 11,
+        maxBounds: MAP_MAX_BOUNDS,
+        // 1.0 makes the edge a hard stop rather than a rubber band.
+        maxBoundsViscosity: 1.0,
+      }).setView([-6.8235, 39.2695], 12);
       L.tileLayer(`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${MAPTILER_KEY}`, {
         attribution: '&copy; MapTiler',
-        maxZoom: 19
+        maxZoom: 19,
+        // No point fetching — or paying MapTiler for — tiles nobody can reach.
+        bounds: MAP_MAX_BOUNDS,
       }).addTo(mapRef.current);
       L.control.zoom({ position: 'bottomright' }).addTo(mapRef.current);
     } catch (e) {
@@ -153,7 +239,17 @@ const Dashboard: React.FC = () => {
         mapData = mapData.filter(r => r.wilaya === admin.managed_wilaya);
     }
 
-    mapData.forEach(report => {
+    // Split rather than silently drop: a report that carries coordinates but
+    // lands outside Dar is a broken GPS fix, and the count is worth surfacing
+    // as a data-quality signal instead of vanishing from the map unexplained.
+    const plottable = mapData.filter(r => ndaniYaDar(r.latitude, r.longitude));
+    setNjeYaDar(
+      mapData.filter(r =>
+        r.latitude != null && r.longitude != null && !ndaniYaDar(r.latitude, r.longitude),
+      ).length,
+    );
+
+    plottable.forEach(report => {
       if (report.latitude && report.longitude) {
         const color = getStatusColor(report.hali);
         const icon = L.divIcon({
@@ -178,7 +274,16 @@ const Dashboard: React.FC = () => {
         markers.push(marker);
       }
     });
-    if (markers.length > 0) try { mapRef.current.fitBounds(L.featureGroup(markers).getBounds().pad(0.1)); } catch (e) {}
+    // Every marker here is inside the region, so the fit can no longer be
+    // stretched across the continent by one bad row. maxZoom stops a single
+    // report from slamming the view down to street level.
+    if (markers.length > 0) {
+      try {
+        mapRef.current.fitBounds(L.featureGroup(markers).getBounds().pad(0.1), { maxZoom: 16 });
+      } catch (e) {
+        mapRef.current.fitBounds(DAR_BOUNDS);
+      }
+    }
   };
 
   const fetchInitialData = async () => {
@@ -249,10 +354,17 @@ const Dashboard: React.FC = () => {
 
   const applyFilters = () => {
     let result = reports;
-    // Anything not yet resolved — the middle statuses are reachable now, so this
-    // must not enumerate them by hand or newly-set ones would vanish from the tab.
-    if (activeTab === 'recent') result = result.filter(r => r.hali !== 'imekamilika');
-    else if (activeTab === 'solved') result = result.filter(r => r.hali === 'imekamilika');
+    // The three queues partition the statuses exactly once between them.
+    // Zinazosubiri is defined by exclusion rather than by listing the statuses
+    // it contains, so a status added later lands in the working queue instead
+    // of falling through every tab and disappearing from the dashboard.
+    if (activeTab === 'zinazosubiri') {
+      result = result.filter(r => r.hali !== 'imekamilika' && r.hali !== HALI_MAMLAKA);
+    } else if (activeTab === 'kwa_mamlaka') {
+      result = result.filter(r => r.hali === HALI_MAMLAKA);
+    } else if (activeTab === 'zilizotatuliwa') {
+      result = result.filter(r => r.hali === 'imekamilika');
+    }
     // District/ward filtering: server-side query already scoped by managed_wilaya,
     // so we only apply filter.wilaya if the admin is NOT scoped. Do not double-filter.
     if (!admin?.managed_wilaya && filter.wilaya) {
@@ -282,93 +394,123 @@ const Dashboard: React.FC = () => {
     setKatas(combinedKatas);
   };
 
+  /**
+   * One stacked bar per category, segmented by status.
+   *
+   * This was a grouped chart: every category got five slots, one per status,
+   * and since a category is rarely spread across all five, most of the plot
+   * was the gaps between bars. Stacking puts each category on a single row, so
+   * the height is the number of categories rather than five times that, and
+   * the bar length answers the question the grouped version buried — which
+   * kind of barrier gets reported most.
+   *
+   * Rows are sorted by volume: the worst category should not be something the
+   * reader has to hunt for.
+   */
   const renderD3Chart = () => {
-    if (!chartRef.current || activeTab !== 'overview') return;
+    if (!chartRef.current || activeTab !== 'muhtasari') return;
 
-    // Process data for COMPARATIVE GROUPED BAR CHART
-    const categories = [...new Set(filteredReports.map(d => d.aina))];
-    if (categories.length === 0) categories.push('No Data');
+    d3.select(chartRef.current).selectAll('*').remove();
+    if (reports.length === 0) return;
 
-    const statusKeys: string[] = [...HALI_ORDER];
-    const statusLabels: any = Object.fromEntries(HALI_ORDER.map(h => [h, HALI[h].short]));
-    const statusColors: any = Object.fromEntries(HALI_ORDER.map(h => [h, HALI[h].hex]));
+    // `reports`, not `filteredReports` — see needsAttention: the summary has no
+    // filter controls and must not describe a subset chosen elsewhere.
+    const rows = [...new Set(reports.map(r => r.aina))]
+      .map(aina => {
+        const inCategory = reports.filter(r => r.aina === aina);
+        const counts = Object.fromEntries(
+          HALI_ORDER.map(h => [h, inCategory.filter(r => r.hali === h).length]),
+        ) as Record<Hali, number>;
+        return { aina, counts, total: inCategory.length };
+      })
+      .sort((a, b) => b.total - a.total);
 
-    const data = categories.map(cat => {
-        const obj: any = { category: cat };
-        statusKeys.forEach(status => {
-            obj[status] = filteredReports.filter(r => r.aina === cat && r.hali === status).length;
-        });
-        return obj;
-    });
-
-    const margin = { top: 30, right: 30, bottom: 40, left: 120 };
-    const width = 800 - margin.left - margin.right;
-    const height = Math.max(300, data.length * 60);
-
-    d3.select(chartRef.current).selectAll("*").remove();
+    const BAR = 24;   // bar thickness
+    const ROW = 42;   // row pitch, so the gap between bars is ROW - BAR
+    const margin = { top: 4, right: 44, bottom: 26, left: 150 };
+    const width = 720 - margin.left - margin.right;
+    const height = rows.length * ROW;
 
     const svg = d3.select(chartRef.current)
-      .attr("viewBox", `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`)
-      .append("g")
-      .attr("transform", `translate(${margin.left},${margin.top})`);
+      .attr('viewBox', `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`)
+      .append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
 
-    const y0 = d3.scaleBand().range([0, height]).domain(categories).paddingInner(0.3);
-    const y1 = d3.scaleBand().domain(statusKeys).rangeRound([0, y0.bandwidth()]).padding(0.05);
+    const maxTotal = d3.max(rows, r => r.total) ?? 1;
+    const x = d3.scaleLinear().domain([0, Math.max(4, maxTotal)]).nice().range([0, width]);
 
-    const maxVal = d3.max(data, d => d3.max(statusKeys, k => d[k])) || 1;
-    const x = d3.scaleLinear()
-        .domain([0, Math.max(5, maxVal)])
-        .range([0, width]);
+    // Counts are whole reports, so a 2.5 gridline would be meaningless.
+    const ticks = x.ticks(6).filter(Number.isInteger);
 
-    // X Axis
-    svg.append("g")
-      .attr("transform", `translate(0,${height})`)
-      .call(d3.axisBottom(x).ticks(5).tickSize(-height).tickPadding(10))
-      .call(g => g.select(".domain").remove())
-      .call(g => g.selectAll(".tick line").attr("stroke", "#f1f5f9"));
+    svg.append('g')
+      .selectAll('line')
+      .data(ticks)
+      .enter().append('line')
+      .attr('x1', d => x(d)).attr('x2', d => x(d))
+      .attr('y1', 0).attr('y2', height)
+      .attr('stroke', '#f1f5f9');
 
-    // Y Axis
-    svg.append("g")
-      .call(d3.axisLeft(y0).tickSize(0).tickPadding(10))
-      .call(g => g.select(".domain").remove())
-      .selectAll("text")
-      .style("font-weight", "800")
-      .style("font-size", "11px")
-      .style("fill", "#64748b");
+    svg.append('g')
+      .selectAll('text')
+      .data(ticks)
+      .enter().append('text')
+      .attr('x', d => x(d)).attr('y', height + 17)
+      .attr('text-anchor', 'middle')
+      .style('font-size', '10px').style('font-weight', '700').style('fill', '#94a3b8')
+      .text(d => d);
 
-    // Bars
-    svg.append("g")
-      .selectAll("g")
-      .data(data)
-      .enter()
-      .append("g")
-      .attr("transform", d => `translate(0,${y0(d.category)})`)
-      .selectAll("rect")
-      .data(d => statusKeys.map(key => ({ key, value: d[key] })))
-      .enter()
-      .append("rect")
-      .attr("x", x(0))
-      .attr("y", d => y1(d.key) || 0)
-      .attr("width", d => x(d.value))
-      .attr("height", y1.bandwidth())
-      .attr("fill", d => statusColors[d.key])
-      .attr("rx", 4);
+    const row = svg.append('g')
+      .selectAll('g')
+      .data(rows)
+      .enter().append('g')
+      .attr('transform', (_d, i) => `translate(0,${i * ROW})`);
 
-    // Legend. Width is derived from the number of statuses rather than fixed:
-    // it was pinned at `width - 150` for three keys, which ran off the right
-    // edge as soon as all five became reachable.
-    const legendItemWidth = 105;
-    const legendWidth = statusKeys.length * legendItemWidth;
+    // Short label on the axis, full label on hover: the full Swahili names run
+    // to forty characters and would either be clipped or eat half the width.
+    row.append('text')
+      .attr('x', -12).attr('y', ROW / 2).attr('dy', '0.35em')
+      .attr('text-anchor', 'end')
+      .style('font-size', '11px').style('font-weight', '800').style('fill', '#475569')
+      .text(d => ainaShort(d.aina))
+      .append('title').text(d => ainaLabel(d.aina));
 
-    const legend = svg.append("g")
-        .attr("transform", `translate(${Math.max(0, width - legendWidth)}, -20)`)
-        .selectAll("g")
-        .data(statusKeys)
-        .enter().append("g")
-        .attr("transform", (_d, i) => `translate(${i * legendItemWidth}, 0)`);
+    // Track behind the bar, so a short bar still reads as a row rather than
+    // floating unanchored in whitespace.
+    row.append('rect')
+      .attr('x', 0).attr('y', (ROW - BAR) / 2)
+      .attr('width', width).attr('height', BAR)
+      .attr('rx', BAR / 2)
+      .attr('fill', '#f8fafc');
 
-    legend.append("rect").attr("width", 8).attr("height", 8).attr("fill", d => statusColors[d]).attr("rx", 2);
-    legend.append("text").attr("x", 12).attr("y", 8).text(d => statusLabels[d]).style("font-size", "11px").style("font-weight", "800").style("fill", "#64748b");
+    // Rounded ends come from clipping the stack rather than rounding each
+    // segment, which would put a notch at every colour change.
+    row.append('clipPath')
+      .attr('id', d => `bar-clip-${d.aina}`)
+      .append('rect')
+      .attr('x', 0).attr('y', (ROW - BAR) / 2)
+      .attr('width', d => x(d.total)).attr('height', BAR)
+      .attr('rx', BAR / 2);
+
+    row.each(function (d) {
+      const stack = d3.select(this).append('g').attr('clip-path', `url(#bar-clip-${d.aina})`);
+      let offset = 0;
+      HALI_ORDER.forEach(h => {
+        const value = d.counts[h];
+        if (value === 0) return;
+        stack.append('rect')
+          .attr('x', x(offset)).attr('y', (ROW - BAR) / 2)
+          .attr('width', x(value) - x(0)).attr('height', BAR)
+          .attr('fill', HALI[h].hex)
+          .append('title').text(`${HALI[h].label}: ${value}`);
+        offset += value;
+      });
+    });
+
+    row.append('text')
+      .attr('x', d => x(d.total) + 10)
+      .attr('y', ROW / 2).attr('dy', '0.35em')
+      .style('font-size', '11px').style('font-weight', '800').style('fill', '#334155')
+      .text(d => d.total);
   };
 
   /**
@@ -418,7 +560,32 @@ const Dashboard: React.FC = () => {
 
   const handleLogout = async () => { await supabase.auth.signOut(); navigate('/'); };
 
-  const isMapTab = activeTab === 'map';
+  const isMapTab = activeTab === 'ramani';
+  // The summary answers questions about the whole set; only the queue views
+  // put a table on screen.
+  const showsTable = activeTab === 'zinazosubiri'
+    || activeTab === 'kwa_mamlaka'
+    || activeTab === 'zilizotatuliwa';
+
+  // What the map overlay reports on. The bar under these numbers used to be a
+  // hardcoded 65% — decoration shaped like a measurement, sitting on a card
+  // where a reader would take it for a completion rate. It now shows one.
+  const hazijatatuliwa = filteredReports.filter(r => r.hali !== 'imekamilika').length;
+  const asilimiaImetatuliwa = filteredReports.length === 0
+    ? 0
+    : Math.round(((filteredReports.length - hazijatatuliwa) / filteredReports.length) * 100);
+
+  // Longest-waiting open reports. A report nobody has touched in six weeks is
+  // the thing a council most needs named, and sorting the queue by date buries
+  // it on the last page.
+  //
+  // Built from `reports`, not `filteredReports`: the summary carries no filter
+  // controls, so it must describe everything this account can see rather than
+  // whatever ward happened to be selected on the queue.
+  const needsAttention = [...reports]
+    .filter(r => r.hali !== 'imekamilika')
+    .sort((a, b) => (sikuTangu(b.created_at) ?? 0) - (sikuTangu(a.created_at) ?? 0))
+    .slice(0, ATTENTION_LIMIT);
 
   const totalPages = Math.max(1, Math.ceil(filteredReports.length / PAGE_SIZE));
   // Clamped rather than trusted: deleting or re-filtering can leave `page`
@@ -439,10 +606,11 @@ const Dashboard: React.FC = () => {
             <span className="text-lg font-black tracking-tighter">MKMU ADMIN</span>
             </div>
             <nav className="space-y-1">
-            <NavItem icon={<LayoutGrid size={18}/>} label="Overview" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
-            <NavItem icon={<Clock size={18}/>} label="Recent" active={activeTab === 'recent'} onClick={() => setActiveTab('recent')} />
-            <NavItem icon={<CheckCircle size={18}/>} label="Solved" active={activeTab === 'solved'} onClick={() => setActiveTab('solved')} />
-            <NavItem icon={<MapIcon size={18}/>} label="Full Map" active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
+            <NavItem icon={<LayoutGrid size={18}/>} label={TABS.muhtasari.label} active={activeTab === 'muhtasari'} onClick={() => setActiveTab('muhtasari')} />
+            <NavItem icon={<Clock size={18}/>} label={TABS.zinazosubiri.label} active={activeTab === 'zinazosubiri'} onClick={() => setActiveTab('zinazosubiri')} />
+            <NavItem icon={<Send size={18}/>} label={TABS.kwa_mamlaka.label} active={activeTab === 'kwa_mamlaka'} onClick={() => setActiveTab('kwa_mamlaka')} />
+            <NavItem icon={<CheckCircle size={18}/>} label={TABS.zilizotatuliwa.label} active={activeTab === 'zilizotatuliwa'} onClick={() => setActiveTab('zilizotatuliwa')} />
+            <NavItem icon={<MapIcon size={18}/>} label={TABS.ramani.label} active={activeTab === 'ramani'} onClick={() => setActiveTab('ramani')} />
             </nav>
         </div>
         <div className="mt-auto p-6 border-t border-white/5">
@@ -456,7 +624,7 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
           <button onClick={handleLogout} className="flex items-center gap-2 w-full p-2 text-red-400 hover:bg-red-500/10 rounded-lg font-bold text-xs transition-all">
-            <LogOut size={14} /> Sign Out
+            <LogOut size={14} aria-hidden="true" /> Toka
           </button>
         </div>
       </aside>
@@ -494,48 +662,153 @@ const Dashboard: React.FC = () => {
           <div className="h-full flex flex-col overflow-y-auto pr-2 custom-scrollbar">
             <header className="flex justify-between items-center mb-8 pl-12">
               <div>
-                <h2 className="text-3xl font-black text-slate-900 tracking-tight capitalize">{activeTab}</h2>
-                <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Dar es Salaam / {admin?.managed_wilaya || 'Metropolitan'}</p>
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight">{TABS[activeTab].title}</h2>
+                <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">
+                  {TABS[activeTab].subtitle} · Dar es Salaam / {admin?.managed_wilaya || 'Metropolitan'}
+                </p>
               </div>
-              <div className="relative group">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 w-4 h-4 group-focus-within:text-blue-500 transition-colors" />
-                <input
-                  type="search" id="report-search" aria-label="Tafuta ripoti"
-                  placeholder="Tafuta..."
-                  className="pl-10 pr-6 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64 shadow-sm text-sm font-bold transition-all"
-                  value={filter.search} onChange={e => setFilter({ ...filter, search: e.target.value })}
-                />
-              </div>
+              {/* Search is a filter too, and the summary has no table for it to
+                  act on — leaving it there only offered a way to make the totals
+                  quietly describe a subset. */}
+              {showsTable && (
+                <div className="relative group">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 w-4 h-4 group-focus-within:text-blue-500 transition-colors" />
+                  <input
+                    type="search" id="report-search" aria-label="Tafuta ripoti"
+                    placeholder="Tafuta..."
+                    className="pl-10 pr-6 py-2.5 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-64 shadow-sm text-sm font-bold transition-all"
+                    value={filter.search} onChange={e => setFilter({ ...filter, search: e.target.value })}
+                  />
+                </div>
+              )}
             </header>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <StatCard label="Jumla" value={filteredReports.length} color="blue" />
-              <StatCard label="Mpya" value={filteredReports.filter(r => r.hali === 'mpya').length} color="orange" />
-              <StatCard label="Kazini" value={filteredReports.filter(r => r.hali !== 'mpya' && r.hali !== 'imekamilika').length} color="purple" />
-              <StatCard label="Imetatuliwa" value={filteredReports.filter(r => r.hali === 'imekamilika').length} color="emerald" />
+            {/* Filters belong to the queue views, not the summary. They used to
+                live in a card only the summary rendered — which gave the queues no
+                way to narrow down, while quietly applying whatever ward had been
+                picked on a page that was meant to describe the whole district. */}
+            {showsTable && (
+            <div className="flex flex-wrap items-end gap-4 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm mb-8">
+              <FilterSelect label="Wilaya" value={filter.wilaya} disabled={!!admin?.managed_wilaya}
+                  options={wilayas} onChange={(v: any) => setFilter({ ...filter, wilaya: v, kata: '' })} />
+              <FilterSelect label="Kata" value={filter.kata} options={katas}
+                  onChange={(v: any) => setFilter({ ...filter, kata: v })} />
+              {(filter.wilaya || filter.kata || filter.search) && (
+                <button
+                  type="button"
+                  onClick={() => setFilter({ wilaya: admin?.managed_wilaya || '', kata: '', search: '' })}
+                  className="px-4 py-3 text-xs font-black text-slate-500 uppercase tracking-widest hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-xl transition-colors"
+                >
+                  Ondoa vichujio
+                </button>
+              )}
             </div>
+            )}
 
-            {activeTab === 'overview' && (
+            {/* The summary carries no table: its job is to say how things stand
+                and what has been waiting longest, not to repeat the queue. */}
+            {activeTab === 'muhtasari' && (
+              <>
+              {/* The cards mirror the queues exactly, so each number is one a
+                  reader can click through to. They used to be Mpya/Kazini, which
+                  matched no tab and left "how many are with the authority" — the
+                  figure most likely to need chasing — unanswered anywhere. */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <StatCard label="Jumla" value={reports.length} color="blue" />
+                <StatCard label={TABS.zinazosubiri.label}
+                  value={reports.filter(r => r.hali !== 'imekamilika' && r.hali !== HALI_MAMLAKA).length}
+                  color="orange" onClick={() => setActiveTab('zinazosubiri')} />
+                <StatCard label={TABS.kwa_mamlaka.label}
+                  value={reports.filter(r => r.hali === HALI_MAMLAKA).length}
+                  color="purple" onClick={() => setActiveTab('kwa_mamlaka')} />
+                <StatCard label={TABS.zilizotatuliwa.label}
+                  value={reports.filter(r => r.hali === 'imekamilika').length}
+                  color="emerald" onClick={() => setActiveTab('zilizotatuliwa')} />
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
                 <div className="lg:col-span-2 bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Distribution</h3>
-                  <svg ref={chartRef} className="w-full"></svg>
-                </div>
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Filter View</h3>
-                  <div className="space-y-4">
-                    <FilterSelect label="District" value={filter.wilaya} disabled={!!admin?.managed_wilaya}
-                        options={wilayas} onChange={(v: any) => setFilter({ ...filter, wilaya: v, kata: '' })} />
-                    <FilterSelect label="Ward" value={filter.kata} options={katas}
-                        onChange={(v: any) => setFilter({ ...filter, kata: v })} />
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 mb-5">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Ripoti kwa Aina</h3>
+                    {/* Legend in HTML rather than inside the SVG: it wraps when the
+                        card is narrow instead of running off the right edge, and
+                        needs no width arithmetic to stay inside the plot. Only
+                        statuses actually present are listed — three dead keys in
+                        the legend made the chart look like it was missing data. */}
+                    <ul className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      {HALI_ORDER.filter(h => reports.some(r => r.hali === h)).map(h => (
+                        <li key={h} className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
+                          <span className={`w-2 h-2 rounded-full ${HALI[h].dot}`} aria-hidden="true" />
+                          {HALI[h].short}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
+                  {reports.length === 0 ? (
+                    <p className="py-12 text-center text-sm text-slate-400">Hakuna ripoti za kuonyesha.</p>
+                  ) : (
+                    <svg
+                      ref={chartRef}
+                      className="w-full"
+                      role="img"
+                      aria-label={`Idadi ya ripoti kwa kila aina, zimegawanywa kwa hali. Jumla ${reports.length}.`}
+                    />
+                  )}
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col">
+                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-5">Zinazohitaji Hatua</h3>
+                  {needsAttention.length === 0 ? (
+                    <p className="text-sm text-slate-400 py-8 text-center">Hakuna ripoti zinazosubiri. Kazi nzuri.</p>
+                  ) : (
+                    <ul className="space-y-1 -mx-2">
+                      {needsAttention.map(r => (
+                        <li key={r.id}>
+                          <button
+                            type="button"
+                            onClick={() => setViewingDetails(r)}
+                            className="w-full text-left px-2 py-2 rounded-lg hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                          >
+                            <div className="flex items-baseline justify-between gap-2">
+                              <span className="text-xs font-black text-slate-800 truncate">{ainaShort(r.aina)}</span>
+                              <span className="text-xs font-bold text-amber-700 shrink-0">
+                                siku {sikuTangu(r.created_at) ?? 0}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className={`w-1.5 h-1.5 rounded-full ${haliDot(r.hali)} shrink-0`} aria-hidden="true" />
+                              <span className="text-xs text-slate-500 truncate">{r.kata || r.wilaya}</span>
+                              {/* These are still on the list, because a report
+                                  sitting with an outside body is exactly the kind
+                                  that goes quiet for months. But the action it
+                                  calls for is a follow-up call, not a work order,
+                                  so it says which. */}
+                              {r.hali === HALI_MAMLAKA && (
+                                <span className="ml-auto shrink-0 text-[10px] font-black uppercase tracking-wider text-sky-700 bg-sky-50 border border-sky-100 rounded px-1.5 py-0.5">
+                                  Fuatilia
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('zinazosubiri')}
+                    className="mt-auto pt-4 text-xs font-black text-blue-600 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded text-left"
+                  >
+                    Ona zinazosubiri zote →
+                  </button>
                 </div>
               </div>
+              </>
             )}
 
             {/* No overflow-hidden here: as a flex child it capped the card at the
                 leftover height and clipped every row past the fold, which read as
                 "the other reports are missing". The page itself scrolls instead. */}
+            {showsTable && (
             <div className="bg-white rounded-3xl border border-slate-100 shadow-sm">
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">
@@ -706,6 +979,7 @@ const Dashboard: React.FC = () => {
                   </nav>
                 )}
             </div>
+            )}
           </div>
         ) : (
           /* IMMERSIVE MAP VIEW */
@@ -717,7 +991,7 @@ const Dashboard: React.FC = () => {
                 <div className="flex gap-2 pointer-events-auto">
                     <div className="bg-white/80 backdrop-blur-md px-4 py-2 rounded-2xl shadow-2xl border border-white/50 flex items-center gap-3">
                         <MapIcon size={16} className="text-blue-600"/>
-                        <span className="text-xs font-black tracking-tight text-slate-800">Live Infrastructure Monitoring</span>
+                        <span className="text-xs font-black tracking-tight text-slate-800">Ufuatiliaji wa Miundombinu</span>
                     </div>
                 </div>
 
@@ -726,31 +1000,58 @@ const Dashboard: React.FC = () => {
                         className="bg-transparent text-xs font-black uppercase tracking-tighter outline-none px-2 py-1 border-r border-slate-200"
                         value={filter.wilaya} onChange={e => setFilter({...filter, wilaya: e.target.value, kata: ''})}
                     >
-                        <option value="">All Districts</option>
+                        <option value="">Wilaya zote</option>
                         {wilayas.map(w => <option key={w} value={w}>{w}</option>)}
                     </select>
                     <div className="px-2 py-1 flex items-center gap-2">
                         <Users size={12} className="text-blue-600"/>
-                        <span className="text-xs font-black">{filteredReports.length} REPORTS</span>
+                        <span className="text-xs font-black">Ripoti {filteredReports.length}</span>
                     </div>
+                    {/* Named rather than hidden: a coordinate outside Dar means a
+                        broken GPS fix, and a map that quietly drops those looks
+                        correct while under-reporting. */}
+                    {njeYaDar > 0 && (
+                      <div
+                        className="px-2 py-1 flex items-center gap-2 text-amber-700"
+                        title="Ripoti zenye viwianishi visivyo sahihi — hazionyeshwi kwenye ramani"
+                      >
+                        <AlertTriangle size={12} aria-hidden="true"/>
+                        <span className="text-xs font-black">{njeYaDar} nje ya Dar</span>
+                      </div>
+                    )}
                 </div>
             </div>
 
             {/* MINI DATA OVERLAY */}
             <div className="absolute bottom-10 left-6 z-[1000] max-w-[280px] pointer-events-auto animate-in slide-in-from-left-4 duration-500">
                 <div className="bg-slate-900/90 backdrop-blur-xl p-6 rounded-[2rem] shadow-2xl border border-white/10 text-white">
-                    <h4 className="text-xs font-black text-blue-400 uppercase tracking-[0.2em] mb-4">Area Insight</h4>
+                    <h4 className="text-xs font-black text-blue-400 uppercase tracking-[0.2em] mb-4">Muhtasari wa Eneo</h4>
                     <div className="space-y-4">
                         <div className="flex justify-between items-end">
-                            <span className="text-xs font-bold text-slate-400">Total Active</span>
-                            <span className="text-2xl font-black">{filteredReports.filter(r => r.hali !== 'imekamilika').length}</span>
+                            <span className="text-xs font-bold text-slate-400">Hazijatatuliwa</span>
+                            <span className="text-2xl font-black">{hazijatatuliwa}</span>
                         </div>
-                        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-blue-500" style={{width: '65%'}}></div>
+                        <div>
+                            <div className="flex justify-between items-baseline mb-1.5">
+                                <span className="text-xs font-bold text-slate-400">Zilizotatuliwa</span>
+                                <span className="text-xs font-black text-white">{asilimiaImetatuliwa}%</span>
+                            </div>
+                            {/* Labelled, because an unlabelled bar is a guess at
+                                best — and this one was previously a wrong guess. */}
+                            <div
+                              className="h-1 bg-white/10 rounded-full overflow-hidden"
+                              role="img"
+                              aria-label={`Zilizotatuliwa: asilimia ${asilimiaImetatuliwa}`}
+                            >
+                                <div
+                                  className="h-full bg-blue-500 transition-all duration-500"
+                                  style={{ width: `${asilimiaImetatuliwa}%` }}
+                                />
+                            </div>
                         </div>
                         <p className="text-xs text-slate-400 leading-relaxed font-medium">
-                            Displaying real-time geo-data for <span className="text-white font-bold">{filter.wilaya || 'All Districts'}</span>.
-                            Interactive points indicate citizen-reported accessibility barriers.
+                            Inaonyesha ripoti za <span className="text-white font-bold">{filter.wilaya || 'Dar es Salaam'}</span>.
+                            Kila alama ni kizuizi kilichoripotiwa na mwananchi.
                         </p>
                     </div>
                 </div>
@@ -1177,7 +1478,12 @@ const NavItem = ({ icon, label, active, onClick }: any) => (
   </button>
 );
 
-const StatCard = ({ label, value, color }: any) => {
+/**
+ * A card is a button when it corresponds to a queue, and inert otherwise —
+ * "Jumla" has no tab to open, and making it look clickable would promise a
+ * view that does not exist.
+ */
+const StatCard = ({ label, value, color, onClick }: any) => {
   const colors: any = {
     blue: "text-blue-600",
     orange: "text-orange-600",
@@ -1185,11 +1491,26 @@ const StatCard = ({ label, value, color }: any) => {
     emerald: "text-emerald-600"
   };
 
-  return (
-    <div className="bg-white px-6 py-5 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all">
+  const body = (
+    <>
       <p className="text-xs font-black text-slate-500 uppercase tracking-widest mb-1">{label}</p>
       <p className={`text-2xl font-black tracking-tighter ${colors[color]}`}>{value}</p>
-    </div>
+    </>
+  );
+
+  const shell = "bg-white px-6 py-5 rounded-3xl border border-slate-100 shadow-sm w-full text-left";
+
+  return onClick ? (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`${label}: ${value}. Fungua orodha.`}
+      className={`${shell} hover:shadow-md hover:border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all`}
+    >
+      {body}
+    </button>
+  ) : (
+    <div className={shell}>{body}</div>
   );
 };
 
@@ -1204,7 +1525,10 @@ const FilterSelect = ({ label, value, options, onChange, disabled }: any) => {
       className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-bold text-xs text-slate-700 transition-all disabled:opacity-50"
       value={value} onChange={e => onChange(e.target.value)}
     >
-      <option value="">All {label}s</option>
+      {/* "Wilaya zote" / "Kata zote" — this was `All {label}s`, which pluralised
+          an English article onto a Swahili noun and read "All Wilayas". Both
+          nouns are N-class, so `zote` agrees for either. */}
+      <option value="">{label} zote</option>
       {options.map((o: any) => <option key={o} value={o}>{o}</option>)}
     </select>
   </div>
